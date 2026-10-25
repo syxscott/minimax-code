@@ -524,6 +524,17 @@ function splitCommandWithoutHeredoc(input: string): string[] {
 
     // Outside quotes: check for separators
     if (!inSingleQuote && !inDoubleQuote) {
+      // Arithmetic evaluation spans (`$(( … ))` / `(( … ))`) treat `&`, `|`,
+      // `&&`, `||` as bitwise / logical operators on numbers, not command
+      // separators. Skip the whole span verbatim so those characters are kept
+      // as data and never flush a segment here.
+      const arithmeticEnd = skipArithmeticContext(folded, i);
+      if (arithmeticEnd !== undefined) {
+        current += folded.slice(i, arithmeticEnd);
+        i = arithmeticEnd - 1;
+        continue;
+      }
+
       // Check for && or ||
       if ((ch === '&' && folded[i + 1] === '&') || (ch === '|' && folded[i + 1] === '|')) {
         flushSegment();
@@ -539,6 +550,35 @@ function splitCommandWithoutHeredoc(input: string): string[] {
 
       // Check for pipe | (single pipe is a sub-command separator for permission)
       if (ch === '|' && folded[i + 1] !== '|') {
+        // `|&` pipes stdout+stderr to the next command — the `|` already
+        // separated, so consume the `&` with it instead of leaking it to the
+        // start of the next segment (where it would shadow the real first
+        // word and defeat first-word evaluation).
+        if (folded[i + 1] === '&') i++;
+        flushSegment();
+        continue;
+      }
+
+      // Single `&` is a POSIX async-list separator: the shell runs BOTH sides
+      // (the left one in the background), so the permission gate must evaluate
+      // both as independent subcommands — same as `;`. A missing split here
+      // lets `echo ok & <payload>` fast-allow on the leading safe first word
+      // while the smuggled right side executes unchecked.
+      //
+      // NOT a separator when the `&` belongs to a redirect / duplication
+      // operator instead:
+      //   `&>` / `&>>`        — followed by `>` (redirect stdout+stderr)
+      //   `2>&1` / `>&2` / `<&0` — preceded by `<` or `>` (fd duplication)
+      //   second `&` of `&&`  — consumed by the `&&` branch above (defensive)
+      //   `|&`                — consumed together with the `|` above
+      if (
+        ch === '&' &&
+        folded[i + 1] !== '>' &&
+        folded[i - 1] !== '>' &&
+        folded[i - 1] !== '<' &&
+        folded[i - 1] !== '|' &&
+        folded[i - 1] !== '&'
+      ) {
         flushSegment();
         continue;
       }
@@ -674,10 +714,12 @@ export function findHeredocBodyRanges(input: string): HeredocBodyRange[] {
 /**
  * Split a compound command string into individual sub-commands.
  *
- * Handles `&&`, `||`, `;`, `|` AND unquoted newline separators while
- * respecting quoted strings and escaped characters. Line-continuations
- * (`\<NL>`) are folded to a space before splitting. After splitting,
- * leading shell control-flow keywords (`if`, `then`, `do`, ...) are
+ * Handles `&&`, `||`, `;`, `|`, `|&`, single `&` (async list) AND unquoted
+ * newline separators while respecting quoted strings and escaped characters.
+ * Redirect operators that embed `&` (`&>`, `&>>`, `2>&1`, `<&0`) and bitwise
+ * `&` / `|` inside `$(( … ))` / `(( … ))` arithmetic spans are preserved.
+ * Line-continuations (`\<NL>`) are folded to a space before splitting. After
+ * splitting, leading shell control-flow keywords (`if`, `then`, `do`, ...) are
  * stripped so the actual command gets evaluated (e.g.
  * `if ps -p 1; then kill 1; fi` splits into `['ps -p 1', 'kill 1']`;
  * standalone `fi` is dropped). Comment-only segments and pure
@@ -689,6 +731,15 @@ export function findHeredocBodyRanges(input: string): HeredocBodyRange[] {
  *
  * splitCommand('echo "a && b"; ls')
  * // => ['echo "a && b"', 'ls']
+ *
+ * splitCommand('echo ok & rm -rf ./build')
+ * // => ['echo ok', 'rm -rf ./build']
+ *
+ * splitCommand('echo hi 2>&1 | tee out.txt')
+ * // => ['echo hi 2>&1', 'tee out.txt']
+ *
+ * splitCommand('make build &> build.log')
+ * // => ['make build &> build.log']
  *
  * splitCommand('if ps -p 1; then kill 1; fi')
  * // => ['ps -p 1', 'kill 1']
