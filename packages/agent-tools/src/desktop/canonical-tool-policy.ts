@@ -20,9 +20,25 @@ const READ_ONLY_CANONICAL_BLOCKED_TOOL_NAMES = new Set([
   'request_feature_enable',
 ]);
 
-/** Computer-use tools share the desktop_* namespace across native and MCP paths. */
+/**
+ * Computer-use tools are registered under two namespaces:
+ *
+ * - `computer_*` — the V2 native catalog (local-runtime-v2 `service/computer-use/tools.ts`)
+ * - `desktop_*`  — the V1 runtime (`packages/local-runtime/src/cu`)
+ *
+ * A check that knows only one prefix silently lets the other namespace escape
+ * the read-only role ceiling and the computer-use availability gate, so both
+ * prefixes are covered here and this list stays the single source of truth for
+ * every consumer.
+ */
+export const COMPUTER_USE_TOOL_NAME_PREFIXES: readonly string[] = [
+  'computer_',
+  'desktop_',
+];
+
+/** True for any tool name owned by a computer-use runtime (V1 or V2). */
 export function isComputerUseRuntimeToolName(name: string): boolean {
-  return name.startsWith('desktop_');
+  return COMPUTER_USE_TOOL_NAME_PREFIXES.some((prefix) => name.startsWith(prefix));
 }
 
 /**

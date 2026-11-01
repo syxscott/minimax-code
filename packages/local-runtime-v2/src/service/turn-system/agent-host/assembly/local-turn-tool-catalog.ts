@@ -1,6 +1,7 @@
 import type { RuntimeTool, RuntimeToolSource } from '@mavis/agent-core/tools';
 import {
   createLocalBashToolDefinition,
+  isComputerUseRuntimeToolName,
   resolveLocalBashShell,
 } from '@mavis/agent-tools/desktop';
 import {
@@ -312,7 +313,7 @@ function isReadyTurnToolAllowed(input: {
 }
 
 function isDesktopToolAvailable(tool: RuntimeTool, cuRuntimeAvailable: boolean): boolean {
-  return cuRuntimeAvailable || !tool.def.name.startsWith('desktop_');
+  return cuRuntimeAvailable || !isComputerUseRuntimeToolName(tool.def.name);
 }
 
 function isMcpServerAllowed(
